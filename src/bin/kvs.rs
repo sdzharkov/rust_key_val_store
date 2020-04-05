@@ -3,13 +3,16 @@ extern crate kvs;
 use clap::{App, Arg, SubCommand, AppSettings};
 use kvs::{KvStore, Result};
 use std::env;
+use std::process::exit;
 
 fn main() -> Result<()> {
   let matches = App::new(env!("CARGO_PKG_NAME"))
                   .version(env!("CARGO_PKG_VERSION"))
                   .author(env!("CARGO_PKG_AUTHORS"))
                   .about(env!("CARGO_PKG_DESCRIPTION"))
-                  .setting(AppSettings::ArgRequiredElseHelp)
+                  .setting(AppSettings::DisableHelpSubcommand)
+                  .setting(AppSettings::SubcommandRequiredElseHelp)
+                  .setting(AppSettings::VersionlessSubcommands)
                   .subcommands(vec![
                     SubCommand::with_name("get")
                       .about("Get the value")
@@ -55,26 +58,32 @@ fn main() -> Result<()> {
       let store = KvStore::open(env::current_dir()?.as_path())?;
       
       match store.get(key.to_string())? {
-        Some(x) => println!("Key: {}, Val: {}", key, x),
-        None => println!("This key does not exist")
+        Some(x) => println!("{}", x),
+        None => println!("Key not found")
       };
-
-      Ok(())
     }
     ("set", Some(set_matches)) => {
       let key = set_matches.value_of("key").unwrap();
       let value = set_matches.value_of("value").unwrap();
 
       let mut store = KvStore::open(env::current_dir()?.as_path())?;
-      store.set(key.to_string(), value.to_string())
+      store.set(key.to_string(), value.to_string())?;
     }
     ("rm", Some(rm_matches)) => {
       let key = rm_matches.value_of("key").unwrap();
       let mut store = KvStore::open(env::current_dir()?.as_path())?;
 
-      store.remove(key.to_string())
+      match store.remove(key.to_string()) {
+        Err(e) => {
+          println!("Key not found");
+          exit(1);
+        },
+        _ => {}
+      };
     }
     ("", None) => panic!("No subcommand was used"), // If no subcommand was usd it'll match the tuple ("", None)
     _ => unreachable!(),
   }
+
+  Ok(())
 }

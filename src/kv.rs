@@ -1,17 +1,15 @@
 use std::collections::HashMap;
-use failure::Error;
-use std::io;
+use failure::{Error, format_err};
 use std::path::{Path};
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{Write, BufReader, BufRead, BufWriter};
+use std::io::{Write, BufReader, BufRead};
 use serde::{Serialize, Deserialize};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Log {
-  Get { key: String },
   Set { key: String, value: String },
   Rm { key: String }
 }
@@ -24,7 +22,7 @@ pub struct KvStore {
 
 impl KvStore {
   pub fn set(&mut self, key: String, value: String) -> Result<()> {
-    // self.store.insert(key.clone(), value.clone());
+    self.store.insert(key.clone(), value.clone());
 
     let log = Log::Set { key: key.clone(), value: value.clone() };
     self.write(&log)
@@ -35,11 +33,14 @@ impl KvStore {
   }
 
   pub fn remove(&mut self, key: String) -> Result<()> {
-    let log = Log::Rm { key: key.to_string() };
-
-    // @TODO: Check if the key exists first before writing to the log
-
-    self.write(&log)
+    if self.store.contains_key(&key) {
+      self.store.remove(&key);
+      let log = Log::Rm { key: key.to_string() };
+  
+      return self.write(&log)
+    } else {
+      Err(format_err!("Key not found"))
+    }
   }
 
   pub fn new(file: File) -> KvStore {
@@ -48,28 +49,22 @@ impl KvStore {
       file: file,
     };
 
+    let hashmap = &mut store.store;
     let reader = BufReader::new(&store.file);
 
-    let lines: Vec<Log> = reader.lines()
-                      .map(|l| l.unwrap())
-                      .map(|l| serde_json::from_str(&l).unwrap())
-                      .collect();
-
-    for line in lines {
-      match line {
-        Log::Rm { key } => {
-          if store.store.contains_key(&key) {
-            store.store.remove(&key);
-          }
-        }, 
-        Log::Set { key, value } => {
-          store.store.insert(key, value);
-        },
-        _ => {
-
-        }
-      }
-    }
+    reader.lines()
+          .map(|l| l.unwrap())
+          .map(|l| serde_json::from_str(&l).unwrap())
+          .for_each(|l| match l {
+            Log::Rm { key } => {
+              if hashmap.contains_key(&key) {
+                hashmap.remove(&key);
+              }
+            }, 
+            Log::Set { key, value } => {
+              hashmap.insert(key, value);
+            }
+          });
 
     store
   }
@@ -99,12 +94,4 @@ impl KvStore {
 
     Ok(KvStore::new(file))
   }
-}
-
-fn read_file<R: BufRead>(mut reader: R) -> Result<()> {
-  for line in reader.lines() {
-    println!("{}", line.unwrap());
-  }
-
-  Ok(())
 }
