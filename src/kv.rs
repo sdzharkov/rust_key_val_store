@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use failure::{Error, format_err};
-use std::path::{Path};
-use std::fs::File;
-use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+use std::fs::{File, OpenOptions, create_dir, read_dir};
 use std::io::{Write, BufReader, BufRead};
 use serde::{Serialize, Deserialize};
+use chrono::prelude::{Utc};
+
+use crate::log_pointer::LogPointer;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -14,10 +16,16 @@ enum Log {
   Rm { key: String }
 }
 
+struct LogReference {
+  filename: str;
+  pos: u64;
+}
+
 #[derive(Debug)]
 pub struct KvStore {
   store: HashMap<String, String>,
-  file: File
+  file: File,
+  readers: HashMap<String, LogPointer<File>>
 }
 
 impl KvStore {
@@ -43,14 +51,17 @@ impl KvStore {
     }
   }
 
-  pub fn new(file: File) -> KvStore {
+  pub fn new(file: File, readers: HashMap<String, LogPointer<File>>) -> KvStore {
     let mut store = KvStore {
       store: HashMap::new(),
       file: file,
+      readers: readers
     };
 
     let hashmap = &mut store.store;
     let reader = BufReader::new(&store.file);
+
+    // let log_pointer = LogPointer::new(&store.file);
 
     reader.lines()
           .map(|l| l.unwrap())
@@ -77,21 +88,48 @@ impl KvStore {
     Ok(())
   }
 
-  pub fn open(current_dir: &Path) -> Result<KvStore>{
+  pub fn open(mut current_dir: PathBuf) -> Result<KvStore>{
     // Creates a new instance of the KvStore struct.
     // Check if a log file exists in the dir:
     //   * if exists: ingest the list and return back a KV store
     //   * else: Create a new list and return back a new instance
 
-    let mut data_file = current_dir.to_path_buf();
-    data_file.push("data.txt");
+    let data_folder_path = format!("{}/data", current_dir.display());
+    let data_folder = Path::new(&data_folder_path);
+
+    let mut index: HashMap<String, LogPointer<File>> = HashMap::new();
+
+    if data_folder.is_dir() {
+      for entry in read_dir(data_folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file = File::open(path)?;
+        let file_name = match entry.file_name().into_string() {
+          Ok(v) => v,
+          Err(e) => {
+            return Err(format_err!("{:?}", e));
+          }
+        };
+
+        let log_pointer = LogPointer::new(file);
+        index.insert(file_name, log_pointer);
+      }
+    } else {
+      create_dir(data_folder)?;
+    }
+
+    for (key, val) in &index {
+      println!("{} has {:?}", key, val);
+  }
+
+    current_dir.push(format!("data/{}.txt", Utc::now()));
 
     let file = OpenOptions::new()
                     .read(true)
                     .append(true)
                     .create(true)
-                    .open(data_file)?;
+                    .open(current_dir)?;
 
-    Ok(KvStore::new(file))
+    Ok(KvStore::new(file, index))
   }
 }
