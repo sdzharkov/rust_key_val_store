@@ -99,7 +99,7 @@ impl KvStore {
     
   }
 
-  pub fn open(current_dir: &Path) -> Result<KvStore>{
+  pub fn open(mut current_dir: PathBuf) -> Result<KvStore>{
     // Creates a new instance of the KvStore struct.
     // Check if a log file exists in the dir:
     //   * if exists: ingest the list and return back a KV store
@@ -161,26 +161,11 @@ impl KvStore {
                     .read(true)
                     .append(true)
                     .create(true)
-                    .open(data_file)?;
+                    .open(current_dir)?;
 
     let writer = BufWriter::new(file);
 
-    let mut store = KvStore::new(index, writer);
-
-    // if the store exists, we deserialize it, oth
-    // if (false) {
-
-    // } else {
-
-    // }
-
-    // let hashmap = &mut store.store;
-
-    for entry in &entries {
-
-    }
-
-
+    let store = KvStore::new(index, writer);
 
     Ok(store)
   }
