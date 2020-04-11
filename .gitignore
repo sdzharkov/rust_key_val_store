@@ -10,4 +10,4 @@ Cargo.lock
 **/*.rs.bk
 
 # Where data is stored for the time being
-data
+data.txt

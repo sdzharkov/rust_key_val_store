@@ -10,7 +10,9 @@ fn main() -> Result<()> {
                   .version(env!("CARGO_PKG_VERSION"))
                   .author(env!("CARGO_PKG_AUTHORS"))
                   .about(env!("CARGO_PKG_DESCRIPTION"))
+                  .setting(AppSettings::DisableHelpSubcommand)
                   .setting(AppSettings::SubcommandRequiredElseHelp)
+                  .setting(AppSettings::VersionlessSubcommands)
                   .subcommands(vec![
                     SubCommand::with_name("get")
                       .about("Get the value")
@@ -53,7 +55,7 @@ fn main() -> Result<()> {
   match matches.subcommand() {
     ("get", Some(get_matches)) => {
       let key = get_matches.value_of("key").unwrap();
-      let store = KvStore::open(env::current_dir()?)?;
+      let store = KvStore::open(env::current_dir()?.as_path())?;
       
       match store.get(key.to_string())? {
         Some(x) => println!("{}", x),
@@ -64,12 +66,12 @@ fn main() -> Result<()> {
       let key = set_matches.value_of("key").unwrap();
       let value = set_matches.value_of("value").unwrap();
 
-      let mut store = KvStore::open(env::current_dir()?)?;
+      let mut store = KvStore::open(env::current_dir()?.as_path())?;
       store.set(key.to_string(), value.to_string())?;
     }
     ("rm", Some(rm_matches)) => {
       let key = rm_matches.value_of("key").unwrap();
-      let mut store = KvStore::open(env::current_dir()?)?;
+      let mut store = KvStore::open(env::current_dir()?.as_path())?;
 
       match store.remove(key.to_string()) {
         Err(e) => {
