@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use failure::{Error, format_err};
-use std::path::{Path};
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::io::{Write, BufReader, BufRead};
+use std::path::{Path, PathBuf};
+use std::fs::{File, OpenOptions, create_dir, read_dir};
+use std::io::{Write, BufReader, BufRead, Seek, SeekFrom, BufWriter};
 use serde::{Serialize, Deserialize};
+use chrono::prelude::{Utc};
+use chrono::{DateTime, TimeZone, NaiveDateTime};
+
+use crate::log_reader::LogReader;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -14,10 +17,19 @@ enum Log {
   Rm { key: String }
 }
 
+// This is what the store would keep as the value
+struct LogReference {
+  filename: String,
+  value_pos: u64,
+  value_size: u64,
+  timestamp: DateTime<Utc>
+}
+
 #[derive(Debug)]
 pub struct KvStore {
   store: HashMap<String, String>,
-  file: File
+  writer: BufWriter<File>,
+  readers: HashMap<String, LogReader<File>>
 }
 
 impl KvStore {
@@ -43,38 +55,48 @@ impl KvStore {
     }
   }
 
-  pub fn new(file: File) -> KvStore {
-    let mut store = KvStore {
+  pub fn new(readers: HashMap<String, LogReader<File>>, writer: BufWriter<File>) -> KvStore {
+    KvStore {
       store: HashMap::new(),
-      file: file,
-    };
+      writer: writer,
+      readers: readers
+    }
 
-    let hashmap = &mut store.store;
-    let reader = BufReader::new(&store.file);
+    // let hashmap = &mut store.store;
 
-    reader.lines()
-          .map(|l| l.unwrap())
-          .map(|l| serde_json::from_str(&l).unwrap())
-          .for_each(|l| match l {
-            Log::Rm { key } => {
-              if hashmap.contains_key(&key) {
-                hashmap.remove(&key);
-              }
-            }, 
-            Log::Set { key, value } => {
-              hashmap.insert(key, value);
-            }
-          });
+    // let log_reader = LogReader::new(&store.file);
 
-    store
+    // reader.lines()
+    //       .map(|l| l.unwrap())
+    //       .map(|l| serde_json::from_str(&l).unwrap())
+    //       .for_each(|l| match l {
+    //         Log::Rm { key } => {
+    //           if hashmap.contains_key(&key) {
+    //             hashmap.remove(&key);
+    //           }
+    //         }, 
+    //         Log::Set { key, value } => {
+    //           hashmap.insert(key, value);
+    //         }
+    //       });
   }
 
   fn write(&mut self, log: &Log) -> Result<()> {
     let serialized = serde_json::to_string(log).unwrap();
 
     // @TODO: does one need to handle this?
-    self.file.write(format!("{}\n", &serialized).as_bytes())?;
+    self.writer.write(format!("{}\n", &serialized).as_bytes())?;
+    let t = self.writer.seek(SeekFrom::Current(0)).unwrap();
+    println!("POS: {}", t);
     Ok(())
+
+    // @TODO: now write this to the reference table
+  }
+
+  fn read_entries(&mut self, file_name: &str) {
+    let pointer = self.readers.get_mut(&String::from(file_name)).expect("Fuck");
+
+    
   }
 
   pub fn open(current_dir: &Path) -> Result<KvStore>{
@@ -82,9 +104,58 @@ impl KvStore {
     // Check if a log file exists in the dir:
     //   * if exists: ingest the list and return back a KV store
     //   * else: Create a new list and return back a new instance
+    
+    current_dir.push("data");
+    // let data_folder_path = format!("{}/data", current_dir.display());
+    // let data_folder = Path::new(&current_dir);
+    let data_folder = &current_dir.as_path();
 
-    let mut data_file = current_dir.to_path_buf();
-    data_file.push("data.txt");
+    let mut index: HashMap<String, LogReader<File>> = HashMap::new();
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let mut store: HashMap<String, String> = HashMap::new();
+
+    if data_folder.is_dir() {
+      entries = read_dir(data_folder)?
+          .map(|res| res.unwrap())
+          .map(|res| res.path())
+          .collect::<Vec<_>>();
+
+      entries.sort();
+      for entry in &entries {
+        let file = File::open(entry)?;
+        let file_name = entry.file_name().unwrap().to_str().unwrap();
+        let log_reader = LogReader::new(file)?;
+
+        // log_reader.reader.seek(SeekFrom::Start(38))?;
+        // let mut line = String::new();
+        // let len = log_reader.reader.read_line(&mut line)?;
+        // println!("First line is {} bytes long: {}", len, line);
+        index.insert(String::from(file_name), log_reader);
+        // let pointer = index.get_mut(&String::from(file_name)).unwrap();
+
+        // reader.lines()
+        //   .map(|l| l.unwrap())
+        //   .map(|l| serde_json::from_str(&l).unwrap())
+        //   .for_each(|l| match l {
+        //     Log::Rm { key } => {
+        //       if store.contains_key(&key) {
+        //         store.remove(&key);
+        //       }
+        //     }, 
+        //     Log::Set { key, value } => {
+        //       store.insert(key, value);
+        //     }
+        //   });
+      }
+    } else {
+      create_dir(data_folder)?;
+    }
+
+    for (key, val) in &index {
+      println!("{} has {:?}", key, val);
+    }
+
+    current_dir.push(format!("{}.txt", Utc::now()));
 
     let file = OpenOptions::new()
                     .read(true)
@@ -92,6 +163,25 @@ impl KvStore {
                     .create(true)
                     .open(data_file)?;
 
-    Ok(KvStore::new(file))
+    let writer = BufWriter::new(file);
+
+    let mut store = KvStore::new(index, writer);
+
+    // if the store exists, we deserialize it, oth
+    // if (false) {
+
+    // } else {
+
+    // }
+
+    // let hashmap = &mut store.store;
+
+    for entry in &entries {
+
+    }
+
+
+
+    Ok(store)
   }
 }
