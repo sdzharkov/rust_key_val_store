@@ -1,65 +1,83 @@
+use chrono::prelude::Utc;
+use chrono::DateTime;
+use failure::{format_err, Error};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use failure::{Error, format_err};
-use std::path::{Path, PathBuf};
-use std::fs::{File, OpenOptions, create_dir, read_dir};
-use std::io::{Write, BufReader, BufRead, Seek, SeekFrom, BufWriter};
-use serde::{Serialize, Deserialize};
-use chrono::prelude::{Utc};
-use chrono::{DateTime, TimeZone, NaiveDateTime};
+use std::fs::{create_dir, read_dir, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
-use crate::log_reader::LogReader;
+use crate::log_helpers::{LogReader, LogWriter};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Log {
   Set { key: String, value: String },
-  Rm { key: String }
+  Rm { key: String },
 }
 
 // This is what the store would keep as the value
+#[derive(Serialize, Deserialize, Debug)]
 struct LogReference {
   filename: String,
-  value_pos: u64,
-  value_size: u64,
-  timestamp: DateTime<Utc>
+  pos: u64,
+  size: u64,
+  // timestamp: String,
+}
+
+impl LogReference {
+  pub fn new(filename: String, pos: u64, size: u64) -> Self {
+    LogReference {
+      filename: filename,
+      pos: pos,
+      size: size,
+    }
+  }
 }
 
 #[derive(Debug)]
 pub struct KvStore {
   store: HashMap<String, String>,
-  writer: BufWriter<File>,
-  readers: HashMap<String, LogReader<File>>
+  store_2: HashMap<String, LogReference>,
+  writer: LogWriter<File>,
+  readers: HashMap<String, LogReader<File>>,
 }
 
 impl KvStore {
   pub fn set(&mut self, key: String, value: String) -> Result<()> {
     self.store.insert(key.clone(), value.clone());
 
-    let log = Log::Set { key: key.clone(), value: value.clone() };
+    let log = Log::Set {
+      key: key.clone(),
+      value: value.clone(),
+    };
     self.write(&log)
   }
 
-  pub fn get(&self, key: String) -> Result<Option<String>>{
+  pub fn get(&self, key: String) -> Result<Option<String>> {
     Ok(self.store.get(&key).cloned())
   }
 
   pub fn remove(&mut self, key: String) -> Result<()> {
     if self.store.contains_key(&key) {
       self.store.remove(&key);
-      let log = Log::Rm { key: key.to_string() };
-  
-      return self.write(&log)
+      let log = Log::Rm {
+        key: key.to_string(),
+      };
+
+      return self.write(&log);
     } else {
       Err(format_err!("Key not found"))
     }
   }
 
-  pub fn new(readers: HashMap<String, LogReader<File>>, writer: BufWriter<File>) -> KvStore {
+  pub fn new(readers: HashMap<String, LogReader<File>>, writer: LogWriter<File>) -> KvStore {
     KvStore {
       store: HashMap::new(),
+      store_2: HashMap::new(),
       writer: writer,
-      readers: readers
+      readers: readers,
     }
 
     // let hashmap = &mut store.store;
@@ -74,7 +92,7 @@ impl KvStore {
     //           if hashmap.contains_key(&key) {
     //             hashmap.remove(&key);
     //           }
-    //         }, 
+    //         },
     //         Log::Set { key, value } => {
     //           hashmap.insert(key, value);
     //         }
@@ -84,27 +102,30 @@ impl KvStore {
   fn write(&mut self, log: &Log) -> Result<()> {
     let serialized = serde_json::to_string(log).unwrap();
 
-    // @TODO: does one need to handle this?
-    self.writer.write(format!("{}\n", &serialized).as_bytes())?;
-    let t = self.writer.seek(SeekFrom::Current(0)).unwrap();
-    println!("POS: {}", t);
+    let start_pos = self.writer.pos;
+    let end_pos = self.writer.write(format!("{}\n", &serialized).as_bytes())? as u64;
+    let size = (end_pos - start_pos) as u64;
+    let file_name = self.writer.filename.clone();
+
+    match log {
+      Log::Rm { key } => {
+        let log_ref = LogReference::new(file_name, start_pos as u64, size);
+        self.store_2.insert(key.clone(), log_ref);
+      }
+      Log::Set { key, value: _ } => {
+        let log_ref = LogReference::new(file_name, start_pos as u64, size);
+        self.store_2.insert(key.clone(), log_ref);
+      }
+    }
+
     Ok(())
-
-    // @TODO: now write this to the reference table
   }
 
-  fn read_entries(&mut self, file_name: &str) {
-    let pointer = self.readers.get_mut(&String::from(file_name)).expect("Fuck");
-
-    
-  }
-
-  pub fn open(mut current_dir: PathBuf) -> Result<KvStore>{
+  pub fn open(mut current_dir: PathBuf) -> Result<KvStore> {
     // Creates a new instance of the KvStore struct.
     // Check if a log file exists in the dir:
     //   * if exists: ingest the list and return back a KV store
     //   * else: Create a new list and return back a new instance
-    
     current_dir.push("data");
     // let data_folder_path = format!("{}/data", current_dir.display());
     // let data_folder = Path::new(&current_dir);
@@ -116,9 +137,9 @@ impl KvStore {
 
     if data_folder.is_dir() {
       entries = read_dir(data_folder)?
-          .map(|res| res.unwrap())
-          .map(|res| res.path())
-          .collect::<Vec<_>>();
+        .map(|res| res.unwrap())
+        .map(|res| res.path())
+        .collect::<Vec<_>>();
 
       entries.sort();
       for entry in &entries {
@@ -141,7 +162,7 @@ impl KvStore {
         //       if store.contains_key(&key) {
         //         store.remove(&key);
         //       }
-        //     }, 
+        //     },
         //     Log::Set { key, value } => {
         //       store.insert(key, value);
         //     }
@@ -151,19 +172,16 @@ impl KvStore {
       create_dir(data_folder)?;
     }
 
-    for (key, val) in &index {
-      println!("{} has {:?}", key, val);
-    }
-
-    current_dir.push(format!("{}.txt", Utc::now()));
+    let filename = format!("{}.txt", Utc::now());
+    current_dir.push(&filename);
 
     let file = OpenOptions::new()
-                    .read(true)
-                    .append(true)
-                    .create(true)
-                    .open(current_dir)?;
+      .read(true)
+      .append(true)
+      .create(true)
+      .open(current_dir)?;
 
-    let writer = BufWriter::new(file);
+    let writer = LogWriter::new(file, filename)?;
 
     let store = KvStore::new(index, writer);
 
