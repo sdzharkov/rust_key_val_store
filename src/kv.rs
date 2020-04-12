@@ -23,7 +23,7 @@ struct LogReference {
   filename: String,
   pos: u64,
   size: u64,
-  // timestamp: String,
+  timestamp: String,
 }
 
 impl LogReference {
@@ -32,6 +32,7 @@ impl LogReference {
       filename: filename,
       pos: pos,
       size: size,
+      timestamp: Utc::now().to_rfc3339(),
     }
   }
 }
@@ -79,24 +80,6 @@ impl KvStore {
       writer: writer,
       readers: readers,
     }
-
-    // let hashmap = &mut store.store;
-
-    // let log_reader = LogReader::new(&store.file);
-
-    // reader.lines()
-    //       .map(|l| l.unwrap())
-    //       .map(|l| serde_json::from_str(&l).unwrap())
-    //       .for_each(|l| match l {
-    //         Log::Rm { key } => {
-    //           if hashmap.contains_key(&key) {
-    //             hashmap.remove(&key);
-    //           }
-    //         },
-    //         Log::Set { key, value } => {
-    //           hashmap.insert(key, value);
-    //         }
-    //       });
   }
 
   fn write(&mut self, log: &Log) -> Result<()> {
@@ -133,7 +116,6 @@ impl KvStore {
 
     let mut index: HashMap<String, LogReader<File>> = HashMap::new();
     let mut entries: Vec<PathBuf> = Vec::new();
-    let mut store: HashMap<String, String> = HashMap::new();
 
     if data_folder.is_dir() {
       entries = read_dir(data_folder)?
@@ -172,19 +154,28 @@ impl KvStore {
       create_dir(data_folder)?;
     }
 
-    let filename = format!("{}.txt", Utc::now());
-    current_dir.push(&filename);
+    let (writer_path_buf, writer_filename) = match entries.last() {
+      Some(v) => {
+        // @TODO: If the size of the file is too large, make a new file
+        (v, String::from(v.file_name().unwrap().to_str().unwrap()))
+      }
+      None => {
+        let filename = format!("{}.txt", Utc::now());
+        current_dir.push(&filename);
+        (&current_dir, filename)
+      }
+    };
 
     let file = OpenOptions::new()
       .read(true)
       .append(true)
       .create(true)
-      .open(current_dir)?;
+      .open(writer_path_buf)?;
 
-    let writer = LogWriter::new(file, filename)?;
+    let writer = LogWriter::new(file, writer_filename)?;
 
-    let store = KvStore::new(index, writer);
+    let kv_store = KvStore::new(index, writer);
 
-    Ok(store)
+    Ok(kv_store)
   }
 }
