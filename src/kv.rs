@@ -99,53 +99,36 @@ impl KvStore {
   }
 
   pub fn open(mut current_dir: PathBuf) -> Result<KvStore> {
-    // Creates a new instance of the KvStore struct.
-    // Check if a log file exists in the dir:
-    //   * if exists: ingest the list and return back a KV store
-    //   * else: Create a new list and return back a new instance
     current_dir.push("data");
-    // let data_folder_path = format!("{}/data", current_dir.display());
-    // let data_folder = Path::new(&current_dir);
     let data_folder = &current_dir.as_path();
-
     let mut index: HashMap<String, LogReader<File>> = HashMap::new();
-    let mut entries: Vec<PathBuf> = Vec::new();
+    let entries = fetch_entries(&current_dir)?;
 
-    if data_folder.is_dir() {
-      entries = read_dir(data_folder)?
-        .map(|res| res.unwrap())
-        .map(|res| res.path())
-        .collect::<Vec<_>>();
-
-      entries.sort();
-      for entry in &entries {
-        let file = File::open(entry)?;
-        let file_name = entry.file_name().unwrap().to_str().unwrap();
-        let log_reader = LogReader::new(file)?;
-
-        // log_reader.reader.seek(SeekFrom::Start(38))?;
-        // let mut line = String::new();
-        // let len = log_reader.reader.read_line(&mut line)?;
-        // println!("First line is {} bytes long: {}", len, line);
-        index.insert(String::from(file_name), log_reader);
-        // let pointer = index.get_mut(&String::from(file_name)).unwrap();
-
-        // reader.lines()
-        //   .map(|l| l.unwrap())
-        //   .map(|l| serde_json::from_str(&l).unwrap())
-        //   .for_each(|l| match l {
-        //     Log::Rm { key } => {
-        //       if store.contains_key(&key) {
-        //         store.remove(&key);
-        //       }
-        //     },
-        //     Log::Set { key, value } => {
-        //       store.insert(key, value);
-        //     }
-        //   });
-      }
-    } else {
+    if !data_folder.is_dir() {
       create_dir(data_folder)?;
+    }
+
+    // Insert each file to the reader hashmap
+    for entry in &entries {
+      let file = File::open(entry)?;
+      let file_name = entry.file_name().unwrap().to_str().unwrap();
+
+      index.insert(String::from(file_name), LogReader::new(file)?);
+      // let pointer = index.get_mut(&String::from(file_name)).unwrap();
+
+      // reader.lines()
+      //   .map(|l| l.unwrap())
+      //   .map(|l| serde_json::from_str(&l).unwrap())
+      //   .for_each(|l| match l {
+      //     Log::Rm { key } => {
+      //       if store.contains_key(&key) {
+      //         store.remove(&key);
+      //       }
+      //     },
+      //     Log::Set { key, value } => {
+      //       store.insert(key, value);
+      //     }
+      //   });
     }
 
     let (writer_path_buf, writer_filename) = match entries.last() {
@@ -167,9 +150,24 @@ impl KvStore {
       .open(writer_path_buf)?;
 
     let writer = LogWriter::new(file, writer_filename)?;
-
     let kv_store = KvStore::new(index, writer);
 
     Ok(kv_store)
   }
+}
+
+fn fetch_entries(current_dir: &PathBuf) -> Result<Vec<PathBuf>> {
+  let mut entries: Vec<PathBuf> = Vec::new();
+  let data_folder = &current_dir.as_path();
+
+  if data_folder.is_dir() {
+    entries = read_dir(data_folder)?
+      .map(|res| res.unwrap())
+      .map(|res| res.path())
+      .collect::<Vec<_>>();
+
+    entries.sort();
+  }
+
+  Ok(entries)
 }
