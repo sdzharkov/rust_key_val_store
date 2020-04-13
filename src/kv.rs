@@ -1,5 +1,4 @@
 use chrono::prelude::Utc;
-use chrono::DateTime;
 use failure::{format_err, Error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,9 +28,9 @@ struct LogReference {
 impl LogReference {
   pub fn new(filename: String, pos: u64, size: u64) -> Self {
     LogReference {
-      filename: filename,
-      pos: pos,
-      size: size,
+      filename,
+      pos,
+      size,
       timestamp: Utc::now().to_rfc3339(),
     }
   }
@@ -49,10 +48,7 @@ impl KvStore {
   pub fn set(&mut self, key: String, value: String) -> Result<()> {
     self.store.insert(key.clone(), value.clone());
 
-    let log = Log::Set {
-      key: key.clone(),
-      value: value.clone(),
-    };
+    let log = Log::Set { key, value };
     self.write(&log)
   }
 
@@ -63,11 +59,9 @@ impl KvStore {
   pub fn remove(&mut self, key: String) -> Result<()> {
     if self.store.contains_key(&key) {
       self.store.remove(&key);
-      let log = Log::Rm {
-        key: key.to_string(),
-      };
+      let log = Log::Rm { key };
 
-      return self.write(&log);
+      self.write(&log)
     } else {
       Err(format_err!("Key not found"))
     }
@@ -77,8 +71,8 @@ impl KvStore {
     KvStore {
       store: HashMap::new(),
       store_2: HashMap::new(),
-      writer: writer,
-      readers: readers,
+      writer,
+      readers,
     }
   }
 
@@ -95,7 +89,7 @@ impl KvStore {
         let log_ref = LogReference::new(file_name, start_pos as u64, size);
         self.store_2.insert(key.clone(), log_ref);
       }
-      Log::Set { key, value: _ } => {
+      Log::Set { key, .. } => {
         let log_ref = LogReference::new(file_name, start_pos as u64, size);
         self.store_2.insert(key.clone(), log_ref);
       }
