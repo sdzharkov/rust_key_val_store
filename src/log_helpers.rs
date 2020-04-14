@@ -41,6 +41,18 @@ impl<T: Read + Seek> Seek for LogReader<T> {
   }
 }
 
+impl<T: Read + Seek> BufRead for LogReader<T> {
+  fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+    self.reader.fill_buf()
+  }
+
+  fn consume(&mut self, amt: usize) {
+    // @TODO: This might be incorrect
+    self.pos += amt as u64;
+    self.reader.consume(amt);
+  }
+}
+
 pub struct LogWriter<T: Write> {
   pub writer: BufWriter<T>,
   pub filename: String,

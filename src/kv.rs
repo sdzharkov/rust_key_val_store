@@ -1,12 +1,13 @@
 use chrono::prelude::Utc;
 use failure::{format_err, Error};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{create_dir, read_dir, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use crate::log_helpers::{LogReader, LogWriter};
+use serde::Deserialize;
+use serde::Serialize;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -17,7 +18,7 @@ enum Log {
 }
 
 // This is what the store would keep as the value
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 struct LogReference {
   filename: String,
   pos: u64,
@@ -38,22 +39,31 @@ impl LogReference {
 
 #[derive(Debug)]
 pub struct KvStore {
-  store: HashMap<String, String>,
-  store_2: HashMap<String, LogReference>,
+  store: HashMap<String, LogReference>,
   writer: LogWriter<File>,
   readers: HashMap<String, LogReader<File>>,
 }
 
 impl KvStore {
   pub fn set(&mut self, key: String, value: String) -> Result<()> {
-    self.store.insert(key.clone(), value.clone());
-
     let log = Log::Set { key, value };
     self.write(&log)
   }
 
-  pub fn get(&self, key: String) -> Result<Option<String>> {
-    Ok(self.store.get(&key).cloned())
+  pub fn get(&mut self, key: String) -> Result<Option<String>> {
+    if let Some(log_ref) = self.store.get(&key) {
+      let reader = self.readers.get_mut(&log_ref.filename).unwrap();
+      reader.seek(SeekFrom::Start(log_ref.pos as u64))?;
+      let mut buffer = vec![0; log_ref.size as usize];
+      let _pos = reader.read(&mut buffer)?;
+      let full_log = serde_json::from_slice(&buffer)?;
+      match full_log {
+        Log::Set { key, value } => Ok(Some(value)),
+        Log::Rm { .. } => Ok(None),
+      }
+    } else {
+      Ok(None)
+    }
   }
 
   pub fn remove(&mut self, key: String) -> Result<()> {
@@ -64,15 +74,6 @@ impl KvStore {
       self.write(&log)
     } else {
       Err(format_err!("Key not found"))
-    }
-  }
-
-  pub fn new(readers: HashMap<String, LogReader<File>>, writer: LogWriter<File>) -> KvStore {
-    KvStore {
-      store: HashMap::new(),
-      store_2: HashMap::new(),
-      writer,
-      readers,
     }
   }
 
@@ -87,21 +88,53 @@ impl KvStore {
     match log {
       Log::Rm { key } => {
         let log_ref = LogReference::new(file_name, start_pos as u64, size);
-        self.store_2.insert(key.clone(), log_ref);
+        self.store.insert(key.clone(), log_ref);
       }
       Log::Set { key, .. } => {
         let log_ref = LogReference::new(file_name, start_pos as u64, size);
-        self.store_2.insert(key.clone(), log_ref);
+        self.store.insert(key.clone(), log_ref);
       }
     }
 
     Ok(())
   }
 
-  pub fn open(mut current_dir: PathBuf) -> Result<KvStore> {
+  fn process_file(
+    log_reader: &mut LogReader<File>,
+    store: &mut HashMap<String, LogReference>,
+    filename: &str,
+  ) -> Result<()> {
+    let mut pos = log_reader.seek(SeekFrom::Start(0))?;
+    let mut stream = serde_json::Deserializer::from_reader(log_reader).into_iter::<Log>();
+
+    while let Some(log) = stream.next() {
+      let new_pos = stream.byte_offset() as u64;
+      match log? {
+        Log::Rm { key } => {
+          store.insert(
+            key.clone(),
+            LogReference::new(String::from(filename), pos, new_pos - pos),
+          );
+        }
+        Log::Set { key, .. } => {
+          store.insert(
+            key.clone(),
+            LogReference::new(String::from(filename), pos, new_pos - pos),
+          );
+        }
+      }
+      pos = new_pos;
+    }
+
+    Ok(())
+  }
+
+  pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+    let mut current_dir = path.into();
     current_dir.push("data");
     let data_folder = &current_dir.as_path();
-    let mut index: HashMap<String, LogReader<File>> = HashMap::new();
+    let mut readers: HashMap<String, LogReader<File>> = HashMap::new();
+    let mut store: HashMap<String, LogReference> = HashMap::new();
     let entries = fetch_entries(&current_dir)?;
 
     if !data_folder.is_dir() {
@@ -112,23 +145,10 @@ impl KvStore {
     for entry in &entries {
       let file = File::open(entry)?;
       let file_name = entry.file_name().unwrap().to_str().unwrap();
+      let mut log_reader = LogReader::new(file)?;
+      KvStore::process_file(&mut log_reader, &mut store, &file_name)?;
 
-      index.insert(String::from(file_name), LogReader::new(file)?);
-      // let pointer = index.get_mut(&String::from(file_name)).unwrap();
-
-      // reader.lines()
-      //   .map(|l| l.unwrap())
-      //   .map(|l| serde_json::from_str(&l).unwrap())
-      //   .for_each(|l| match l {
-      //     Log::Rm { key } => {
-      //       if store.contains_key(&key) {
-      //         store.remove(&key);
-      //       }
-      //     },
-      //     Log::Set { key, value } => {
-      //       store.insert(key, value);
-      //     }
-      //   });
+      readers.insert(String::from(file_name), log_reader);
     }
 
     let (writer_path_buf, writer_filename) = match entries.last() {
@@ -150,9 +170,12 @@ impl KvStore {
       .open(writer_path_buf)?;
 
     let writer = LogWriter::new(file, writer_filename)?;
-    let kv_store = KvStore::new(index, writer);
 
-    Ok(kv_store)
+    Ok(KvStore {
+      readers,
+      writer,
+      store,
+    })
   }
 }
 
