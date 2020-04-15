@@ -3,7 +3,7 @@
 KvStore is a log-based, persistant, key value store that is inspired by the
 Bitcask store architecture. The project was mainly built as a tool to learn Rust
 and log-based key value stores. This is my first personal project that has been
-written in Rust so appologies with any informalities / uncleanliness.
+written in Rust so apologies for any informalities / uncleanliness.
 
 ## Installing
 
