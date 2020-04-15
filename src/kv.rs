@@ -55,10 +55,11 @@ impl KvStore {
       let reader = self.readers.get_mut(&log_ref.filename).unwrap();
       reader.seek(SeekFrom::Start(log_ref.pos as u64))?;
       let mut buffer = vec![0; log_ref.size as usize];
-      let _pos = reader.read(&mut buffer)?;
+      reader.read_exact(&mut buffer)?;
+
       let full_log = serde_json::from_slice(&buffer)?;
       match full_log {
-        Log::Set { key, value } => Ok(Some(value)),
+        Log::Set { value, .. } => Ok(Some(value)),
         Log::Rm { .. } => Ok(None),
       }
     } else {
@@ -78,20 +79,19 @@ impl KvStore {
   }
 
   fn write(&mut self, log: &Log) -> Result<()> {
-    let serialized = serde_json::to_string(log).unwrap();
-
+    let serialized = serde_json::to_vec(log).unwrap();
     let start_pos = self.writer.pos;
-    let end_pos = self.writer.write(format!("{}\n", &serialized).as_bytes())? as u64;
-    let size = (end_pos - start_pos) as u64;
+    let bytes_writen = self.writer.write(&serialized)? as u64;
+    self.writer.flush()?;
     let file_name = self.writer.filename.clone();
 
     match log {
       Log::Rm { key } => {
-        let log_ref = LogReference::new(file_name, start_pos as u64, size);
+        let log_ref = LogReference::new(file_name, start_pos as u64, bytes_writen);
         self.store.insert(key.clone(), log_ref);
       }
       Log::Set { key, .. } => {
-        let log_ref = LogReference::new(file_name, start_pos as u64, size);
+        let log_ref = LogReference::new(file_name, start_pos as u64, bytes_writen);
         self.store.insert(key.clone(), log_ref);
       }
     }
@@ -168,8 +168,12 @@ impl KvStore {
       .append(true)
       .create(true)
       .open(writer_path_buf)?;
+    // @TODO: move this somewhere else
+    let file_clone = file.try_clone()?;
+    let writer_filename_clone = writer_filename.clone();
 
     let writer = LogWriter::new(file, writer_filename)?;
+    readers.insert(writer_filename_clone, LogReader::new(file_clone)?);
 
     Ok(KvStore {
       readers,
