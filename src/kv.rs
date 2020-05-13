@@ -3,7 +3,7 @@ use failure::{format_err, Error};
 use std::collections::HashMap;
 use std::fs::{create_dir, read_dir, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::log_helpers::{LogReader, LogWriter};
 use serde::Deserialize;
@@ -17,7 +17,6 @@ enum Log {
   Rm { key: String },
 }
 
-// This is what the store would keep as the value
 #[derive(Debug)]
 struct LogReference {
   filename: String,
@@ -47,18 +46,18 @@ pub struct KvStore {
 impl KvStore {
   pub fn set(&mut self, key: String, value: String) -> Result<()> {
     let log = Log::Set { key, value };
-    self.write(&log)
+    self.write(log)
   }
 
   pub fn get(&mut self, key: String) -> Result<Option<String>> {
     if let Some(log_ref) = self.store.get(&key) {
       let reader = self.readers.get_mut(&log_ref.filename).unwrap();
-      reader.seek(SeekFrom::Start(log_ref.pos as u64))?;
       let mut buffer = vec![0; log_ref.size as usize];
+
+      reader.seek(SeekFrom::Start(log_ref.pos as u64))?;
       reader.read_exact(&mut buffer)?;
 
-      let full_log = serde_json::from_slice(&buffer)?;
-      match full_log {
+      match serde_json::from_slice(&buffer)? {
         Log::Set { value, .. } => Ok(Some(value)),
         Log::Rm { .. } => Ok(None),
       }
@@ -72,27 +71,27 @@ impl KvStore {
       self.store.remove(&key);
       let log = Log::Rm { key };
 
-      self.write(&log)
+      self.write(log)
     } else {
       Err(format_err!("Key not found"))
     }
   }
 
-  fn write(&mut self, log: &Log) -> Result<()> {
-    let serialized = serde_json::to_vec(log).unwrap();
+  fn write(&mut self, log: Log) -> Result<()> {
+    let serialized = serde_json::to_vec(&log).unwrap();
+    let file_name = self.writer.filename.clone();
     let start_pos = self.writer.pos;
     let bytes_writen = self.writer.write(&serialized)? as u64;
     self.writer.flush()?;
-    let file_name = self.writer.filename.clone();
 
     match log {
       Log::Rm { key } => {
         let log_ref = LogReference::new(file_name, start_pos as u64, bytes_writen);
-        self.store.insert(key.clone(), log_ref);
+        self.store.insert(key, log_ref);
       }
       Log::Set { key, .. } => {
         let log_ref = LogReference::new(file_name, start_pos as u64, bytes_writen);
-        self.store.insert(key.clone(), log_ref);
+        self.store.insert(key, log_ref);
       }
     }
 
@@ -132,14 +131,9 @@ impl KvStore {
   pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
     let mut current_dir = path.into();
     current_dir.push("data");
-    let data_folder = &current_dir.as_path();
     let mut readers: HashMap<String, LogReader<File>> = HashMap::new();
     let mut store: HashMap<String, LogReference> = HashMap::new();
     let entries = fetch_entries(&current_dir)?;
-
-    if !data_folder.is_dir() {
-      create_dir(data_folder)?;
-    }
 
     // Insert each file to the reader hashmap
     for entry in &entries {
@@ -168,7 +162,7 @@ impl KvStore {
       .append(true)
       .create(true)
       .open(writer_path_buf)?;
-    // @TODO: move this somewhere else
+    // @TODO move this somewhere else
     let file_clone = file.try_clone()?;
     let writer_filename_clone = writer_filename.clone();
 
@@ -189,11 +183,13 @@ fn fetch_entries(current_dir: &PathBuf) -> Result<Vec<PathBuf>> {
 
   if data_folder.is_dir() {
     entries = read_dir(data_folder)?
-      .map(|res| res.unwrap())
+      .filter_map(std::result::Result::ok)
       .map(|res| res.path())
       .collect::<Vec<_>>();
 
     entries.sort();
+  } else {
+    create_dir(data_folder)?;
   }
 
   Ok(entries)
